@@ -46,7 +46,6 @@ jobs:
 
       - name: Update ClamAV signatures
         id: signatures
-        continue-on-error: true
         run: |
           sudo freshclam --stdout --verbose
 
