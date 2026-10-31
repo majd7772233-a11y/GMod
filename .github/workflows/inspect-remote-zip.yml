@@ -41,12 +41,17 @@ jobs:
       - name: Install scanner and Python dependency
         run: |
           sudo apt-get update
-          sudo apt-get install -y clamav
+          sudo apt-get install -y clamav clamav-freshclam
           python -m pip install --disable-pip-version-check requests
+
+      - name: Validate inspector syntax
+        run: |
+          python -m py_compile tools/inspect_remote_zip.py
 
       - name: Update ClamAV signatures
         id: signatures
         run: |
+          sudo systemctl stop clamav-freshclam.service 2>/dev/null || true
           sudo freshclam --stdout --verbose
 
       - name: Inspect remote ZIP in the hosted runner
