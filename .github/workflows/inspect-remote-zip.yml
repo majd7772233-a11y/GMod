@@ -1,0 +1,90 @@
+name: Inspect remote ZIP
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_url:
+        description: "Direct HTTPS URL to a ZIP archive"
+        required: true
+        type: string
+        default: "https://vega.wifi4games.com/Garry%27s%20Mod%2014%20%5Bwww.wifi4games.com%5D.zip"
+      max_extract_gib:
+        description: "Maximum total uncompressed size allowed (GiB)"
+        required: true
+        type: number
+        default: 6
+
+permissions:
+  contents: write
+
+concurrency:
+  group: remote-zip-inspection
+  cancel-in-progress: false
+
+jobs:
+  inspect:
+    name: Download, inspect, scan and report
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install scanner and Python dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clamav
+          python -m pip install --disable-pip-version-check requests
+
+      - name: Update ClamAV signatures
+        id: signatures
+        continue-on-error: true
+        run: |
+          sudo freshclam --stdout --verbose
+
+      - name: Inspect remote ZIP in the hosted runner
+        id: inspect
+        continue-on-error: true
+        env:
+          SOURCE_URL: ${{ inputs.source_url }}
+          MAX_EXTRACT_GIB: ${{ inputs.max_extract_gib }}
+        run: |
+          python tools/inspect_remote_zip.py
+
+      - name: Publish inspection reports to the repository
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -d reports/latest ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add reports/latest
+            if ! git diff --cached --quiet; then
+              git commit -m "Update remote ZIP inspection report"
+              git push origin "HEAD:${{ github.ref_name }}"
+            else
+              echo "No report changes to commit."
+            fi
+          else
+            echo "No report directory was generated."
+          fi
+
+      - name: Mark run failed when inspection failed
+        if: steps.inspect.outcome == 'failure'
+        run: |
+          echo "Inspection did not complete cleanly. Review the job log and reports/latest."
+          exit 1
+
+      - name: Show report location
+        if: always()
+        run: |
+          echo "Reports, when generated, are stored in reports/latest/ on the repository branch."
