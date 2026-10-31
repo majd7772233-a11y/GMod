@@ -206,6 +206,18 @@ def inspect_and_extract(max_extract_bytes: int) -> dict[str, Any]:
     if expected_size > 3 * (1024 ** 3):
         raise RuntimeError(f"Archive is larger than the 3 GiB safety limit: {gib(expected_size)} GiB.")
 
+    free_bytes = shutil.disk_usage(ROOT).free
+    required_bytes = expected_size + max_extract_bytes + (1 * 1024 ** 3)
+    print(
+        f"Runner free space: {gib(free_bytes)} GiB; "
+        f"minimum planned space including 1 GiB reserve: {gib(required_bytes)} GiB"
+    )
+    if free_bytes < required_bytes:
+        raise RuntimeError(
+            "Not enough runner disk space for the archive, configured extraction limit, "
+            "and safety reserve. Refusing to start the large download."
+        )
+
     print(f"Remote archive size: {gib(expected_size)} GiB; byte ranges: {accepts_ranges}")
     downloaded = download_with_resume(source_url, expected_size)
 
@@ -218,6 +230,8 @@ def inspect_and_extract(max_extract_bytes: int) -> dict[str, Any]:
     unsafe_paths = 0
     symlinks = 0
     too_large_members = 0
+    duplicate_members = 0
+    seen_member_paths: set[str] = set()
 
     with zipfile.ZipFile(ARCHIVE_PATH, "r") as archive:
         infos = archive.infolist()
@@ -231,10 +245,14 @@ def inspect_and_extract(max_extract_bytes: int) -> dict[str, Any]:
             status = "listed"
             mode = (info.external_attr >> 16) & 0xFFFF
             is_link = stat.S_ISLNK(mode)
+            canonical = str(target.relative_to(EXTRACT_DIR)) if target is not None else raw_name
 
             if target is None:
                 status = "rejected-unsafe-path"
                 unsafe_paths += 1
+            elif canonical in seen_member_paths:
+                status = "duplicate-member-path"
+                duplicate_members += 1
             elif is_link:
                 status = "rejected-symlink"
                 symlinks += 1
@@ -251,6 +269,7 @@ def inspect_and_extract(max_extract_bytes: int) -> dict[str, Any]:
             else:
                 total_uncompressed += info.file_size
 
+            seen_member_paths.add(canonical)
             rows.append({
                 "path": raw_name,
                 "size": info.file_size,
@@ -316,9 +335,8 @@ def inspect_and_extract(max_extract_bytes: int) -> dict[str, Any]:
     extracted_scan = run_clamav(EXTRACT_DIR, REPORT_DIR / "extracted-scan.log", recursive=True)
 
     incomplete = bool(
-        errors or encrypted or unsafe_paths or symlinks or too_large_members
-        or any(row["status"].startswith("skipped") or row["status"].startswith("rejected")
-               or row["status"] == "encrypted-not-inspected" for row in rows)
+        errors or encrypted or unsafe_paths or symlinks or too_large_members or duplicate_members
+        or any(row["status"] not in {"directory-created", "extracted"} for row in rows)
     )
     infected = archive_scan.get("infected_detected", False) or extracted_scan.get("infected_detected", False)
     scan_error = archive_scan.get("return_code") == 2 or extracted_scan.get("return_code") == 2
@@ -341,6 +359,7 @@ def inspect_and_extract(max_extract_bytes: int) -> dict[str, Any]:
         "unsafe_paths_rejected": unsafe_paths,
         "symlinks_rejected": symlinks,
         "members_over_2gib_skipped": too_large_members,
+        "duplicate_member_paths_skipped": duplicate_members,
         "extraction_errors": errors,
         "archive_scan": archive_scan,
         "extracted_scan": extracted_scan,
