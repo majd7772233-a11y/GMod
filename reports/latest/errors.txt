@@ -1,0 +1,2 @@
+No extraction errors recorded.
+Inspection result is INFECTED; see reports/latest/ for details.
